@@ -3331,9 +3331,12 @@
 // 批量转写模态框基础样式（共享样式在 styles/batchTranscribe.scss）
 
 // 批量转写确认对话框
-.batch-confirm-modal {
+.batch-modal-content.batch-confirm-modal {
   width: 480px;
   max-width: 90vw;
+  max-height: none;
+  overflow: visible;
+  overflow-y: visible;
 
   .batch-modal-header {
     display: flex;
@@ -3470,6 +3473,74 @@
           font-weight: 600;
           color: var(--primary-color);
         }
+
+        .batch-concurrency-field {
+          position: relative;
+
+          .batch-concurrency-trigger {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            border-radius: 9999px;
+            border: 1px solid var(--border-color);
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-size: 13px;
+            cursor: pointer;
+
+            &:hover {
+              border-color: var(--text-tertiary);
+            }
+
+            &.open {
+              border-color: var(--primary);
+            }
+
+            svg {
+              color: var(--text-tertiary);
+              transition: transform 0.2s;
+            }
+
+            &.open svg {
+              transform: rotate(180deg);
+            }
+          }
+
+          .batch-concurrency-dropdown {
+            position: absolute;
+            top: calc(100% + 6px);
+            right: 0;
+            min-width: 180px;
+            background: color-mix(in srgb, var(--bg-primary) 90%, var(--bg-secondary));
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 6px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+            z-index: 100;
+          }
+
+          .batch-concurrency-option {
+            width: 100%;
+            text-align: left;
+            padding: 8px 12px;
+            border: none;
+            border-radius: 8px;
+            background: transparent;
+            color: var(--text-primary);
+            font-size: 13px;
+            cursor: pointer;
+
+            &:hover {
+              background: var(--bg-tertiary);
+            }
+
+            &.active {
+              color: var(--primary);
+              font-weight: 500;
+            }
+          }
+        }
       }
     }
 
@@ -3527,7 +3598,7 @@
       &.btn-primary,
       &.batch-transcribe-start-btn {
         background: var(--primary-color);
-        color: white;
+        color: #000;
 
         &:hover {
           opacity: 0.9;

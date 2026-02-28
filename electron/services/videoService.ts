@@ -1,5 +1,6 @@
 ﻿import { join } from 'path'
-import { existsSync, readdirSync, statSync, readFileSync } from 'fs'
+import { existsSync, readdirSync, statSync, readFileSync, appendFileSync, mkdirSync } from 'fs'
+import { app } from 'electron'
 import { ConfigService } from './config'
 import Database from 'better-sqlite3'
 import { wcdbService } from './wcdbService'
@@ -16,6 +17,16 @@ class VideoService {
 
     constructor() {
         this.configService = new ConfigService()
+    }
+
+    private log(message: string, meta?: Record<string, unknown>): void {
+        try {
+            const timestamp = new Date().toISOString()
+            const metaStr = meta ? ` ${JSON.stringify(meta)}` : ''
+            const logDir = join(app.getPath('userData'), 'logs')
+            if (!existsSync(logDir)) mkdirSync(logDir, { recursive: true })
+            appendFileSync(join(logDir, 'wcdb.log'), `[${timestamp}] [VideoService] ${message}${metaStr}\n`, 'utf8')
+        } catch {}
     }
 
     /**
@@ -69,7 +80,12 @@ class VideoService {
         const wxid = this.getMyWxid()
         const cleanedWxid = this.cleanWxid(wxid)
 
-        if (!wxid) return undefined
+        this.log('queryVideoFileName 开始', { md5, wxid, cleanedWxid, cachePath, dbPath })
+
+        if (!wxid) {
+            this.log('queryVideoFileName: wxid 为空')
+            return undefined
+        }
 
         // 方法1：优先在 cachePath 下查找解密后的 hardlink.db
         if (cachePath) {
@@ -84,20 +100,23 @@ class VideoService {
             for (const p of cacheDbPaths) {
                 if (existsSync(p)) {
                     try {
+                        this.log('尝试缓存 hardlink.db', { path: p })
                         const db = new Database(p, { readonly: true })
                         const row = db.prepare(`
-                            SELECT file_name, md5 FROM video_hardlink_info_v4 
-                            WHERE md5 = ? 
+                            SELECT file_name, md5 FROM video_hardlink_info_v4
+                            WHERE md5 = ?
                             LIMIT 1
                         `).get(md5) as { file_name: string; md5: string } | undefined
                         db.close()
 
                         if (row?.file_name) {
                             const realMd5 = row.file_name.replace(/\.[^.]+$/, '')
+                            this.log('缓存 hardlink.db 命中', { file_name: row.file_name, realMd5 })
                             return realMd5
                         }
+                        this.log('缓存 hardlink.db 未命中', { path: p })
                     } catch (e) {
-                        // 忽略错误
+                        this.log('缓存 hardlink.db 查询失败', { path: p, error: String(e) })
                     }
                 }
             }
@@ -105,7 +124,6 @@ class VideoService {
 
         // 方法2：使用 wcdbService.execQuery 查询加密的 hardlink.db
         if (dbPath) {
-            // 检查 dbPath 是否已经包含 wxid
             const dbPathLower = dbPath.toLowerCase()
             const wxidLower = wxid.toLowerCase()
             const cleanedWxidLower = cleanedWxid.toLowerCase()
@@ -113,10 +131,8 @@ class VideoService {
 
             const encryptedDbPaths: string[] = []
             if (dbPathContainsWxid) {
-                // dbPath 已包含 wxid，不需要再拼接
                 encryptedDbPaths.push(join(dbPath, 'db_storage', 'hardlink', 'hardlink.db'))
             } else {
-                // dbPath 不包含 wxid，需要拼接
                 encryptedDbPaths.push(join(dbPath, wxid, 'db_storage', 'hardlink', 'hardlink.db'))
                 encryptedDbPaths.push(join(dbPath, cleanedWxid, 'db_storage', 'hardlink', 'hardlink.db'))
             }
@@ -124,27 +140,29 @@ class VideoService {
             for (const p of encryptedDbPaths) {
                 if (existsSync(p)) {
                     try {
+                        this.log('尝试加密 hardlink.db', { path: p })
                         const escapedMd5 = md5.replace(/'/g, "''")
-
-                        // 用 md5 字段查询，获取 file_name
                         const sql = `SELECT file_name FROM video_hardlink_info_v4 WHERE md5 = '${escapedMd5}' LIMIT 1`
-
                         const result = await wcdbService.execQuery('media', p, sql)
 
                         if (result.success && result.rows && result.rows.length > 0) {
                             const row = result.rows[0]
                             if (row?.file_name) {
-                                // 提取不带扩展名的文件名作为实际视频 MD5
                                 const realMd5 = String(row.file_name).replace(/\.[^.]+$/, '')
+                                this.log('加密 hardlink.db 命中', { file_name: row.file_name, realMd5 })
                                 return realMd5
                             }
                         }
+                        this.log('加密 hardlink.db 未命中', { path: p, result: JSON.stringify(result).slice(0, 200) })
                     } catch (e) {
-                        // 忽略错误
+                        this.log('加密 hardlink.db 查询失败', { path: p, error: String(e) })
                     }
+                } else {
+                    this.log('加密 hardlink.db 不存在', { path: p })
                 }
             }
         }
+        this.log('queryVideoFileName: 所有方法均未找到', { md5 })
         return undefined
     }
 
@@ -170,12 +188,16 @@ class VideoService {
         const dbPath = this.getDbPath()
         const wxid = this.getMyWxid()
 
+        this.log('getVideoInfo 开始', { videoMd5, dbPath, wxid })
+
         if (!dbPath || !wxid || !videoMd5) {
+            this.log('getVideoInfo: 参数缺失', { dbPath: !!dbPath, wxid: !!wxid, videoMd5: !!videoMd5 })
             return { exists: false }
         }
 
         // 先尝试从数据库查询真正的视频文件名
         const realVideoMd5 = await this.queryVideoFileName(videoMd5) || videoMd5
+        this.log('realVideoMd5', { input: videoMd5, resolved: realVideoMd5, changed: realVideoMd5 !== videoMd5 })
 
         // 检查 dbPath 是否已经包含 wxid，避免重复拼接
         const dbPathLower = dbPath.toLowerCase()
@@ -184,50 +206,58 @@ class VideoService {
 
         let videoBaseDir: string
         if (dbPathLower.includes(wxidLower) || dbPathLower.includes(cleanedWxid.toLowerCase())) {
-            // dbPath 已经包含 wxid，直接使用
             videoBaseDir = join(dbPath, 'msg', 'video')
         } else {
-            // dbPath 不包含 wxid，需要拼接
             videoBaseDir = join(dbPath, wxid, 'msg', 'video')
         }
 
+        this.log('videoBaseDir', { videoBaseDir, exists: existsSync(videoBaseDir) })
+
         if (!existsSync(videoBaseDir)) {
+            this.log('getVideoInfo: videoBaseDir 不存在')
             return { exists: false }
         }
 
         // 遍历年月目录查找视频文件
         try {
             const allDirs = readdirSync(videoBaseDir)
-
-            // 支持多种目录格式: YYYY-MM, YYYYMM, 或其他
             const yearMonthDirs = allDirs
                 .filter(dir => {
                     const dirPath = join(videoBaseDir, dir)
                     return statSync(dirPath).isDirectory()
                 })
-                .sort((a, b) => b.localeCompare(a)) // 从最新的目录开始查找
+                .sort((a, b) => b.localeCompare(a))
+
+            this.log('扫描目录', { dirs: yearMonthDirs })
 
             for (const yearMonth of yearMonthDirs) {
                 const dirPath = join(videoBaseDir, yearMonth)
-
                 const videoPath = join(dirPath, `${realVideoMd5}.mp4`)
-                const coverPath = join(dirPath, `${realVideoMd5}.jpg`)
-                const thumbPath = join(dirPath, `${realVideoMd5}_thumb.jpg`)
 
-                // 检查视频文件是否存在
                 if (existsSync(videoPath)) {
+                    this.log('找到视频', { videoPath })
+                    const coverPath = join(dirPath, `${realVideoMd5}.jpg`)
+                    const thumbPath = join(dirPath, `${realVideoMd5}_thumb.jpg`)
                     return {
-                        videoUrl: videoPath,  // 返回文件路径，前端通过 readFile 读取
+                        videoUrl: videoPath,
                         coverUrl: this.fileToDataUrl(coverPath, 'image/jpeg'),
                         thumbUrl: this.fileToDataUrl(thumbPath, 'image/jpeg'),
                         exists: true
                     }
                 }
             }
+
+            // 没找到，列出第一个目录里的文件帮助排查
+            if (yearMonthDirs.length > 0) {
+                const firstDir = join(videoBaseDir, yearMonthDirs[0])
+                const files = readdirSync(firstDir).filter(f => f.endsWith('.mp4')).slice(0, 5)
+                this.log('未找到视频，最新目录样本', { dir: yearMonthDirs[0], sampleFiles: files, lookingFor: `${realVideoMd5}.mp4` })
+            }
         } catch (e) {
-            // 忽略错误
+            this.log('getVideoInfo 遍历出错', { error: String(e) })
         }
 
+        this.log('getVideoInfo: 未找到视频', { videoMd5, realVideoMd5 })
         return { exists: false }
     }
 

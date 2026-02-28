@@ -345,6 +345,8 @@ function ChatPage(_props: ChatPageProps) {
   const [batchImageMessages, setBatchImageMessages] = useState<BatchImageDecryptCandidate[] | null>(null)
   const [batchImageDates, setBatchImageDates] = useState<string[]>([])
   const [batchImageSelectedDates, setBatchImageSelectedDates] = useState<Set<string>>(new Set())
+  const [batchDecryptConcurrency, setBatchDecryptConcurrency] = useState(6)
+  const [showConcurrencyDropdown, setShowConcurrencyDropdown] = useState(false)
 
   // 批量删除相关状态
   const [isDeleting, setIsDeleting] = useState(false)
@@ -1662,29 +1664,44 @@ function ChatPage(_props: ChatPageProps) {
 
     let successCount = 0
     let failCount = 0
-    for (let i = 0; i < images.length; i++) {
-      const img = images[i]
+    let completed = 0
+    const concurrency = batchDecryptConcurrency
+
+    const decryptOne = async (img: typeof images[0]) => {
       try {
         const r = await window.electronAPI.image.decrypt({
           sessionId: session.username,
           imageMd5: img.imageMd5,
           imageDatName: img.imageDatName,
-          force: false
+          force: true
         })
         if (r?.success) successCount++
         else failCount++
       } catch {
         failCount++
       }
-
-      updateDecryptProgress(i + 1, images.length)
-      if (i % 5 === 0) {
-        await new Promise(resolve => setTimeout(resolve, 0))
-      }
+      completed++
+      updateDecryptProgress(completed, images.length)
     }
 
+    // 并发池：同时跑 concurrency 个任务
+    const pool: Promise<void>[] = []
+    for (const img of images) {
+      const p = decryptOne(img)
+      pool.push(p)
+      if (pool.length >= concurrency) {
+        await Promise.race(pool)
+        // 移除已完成的
+        for (let j = pool.length - 1; j >= 0; j--) {
+          const settled = await Promise.race([pool[j].then(() => true), Promise.resolve(false)])
+          if (settled) pool.splice(j, 1)
+        }
+      }
+    }
+    await Promise.all(pool)
+
     finishDecrypt(successCount, failCount)
-  }, [batchImageMessages, batchImageSelectedDates, currentSessionId, finishDecrypt, sessions, startDecrypt, updateDecryptProgress])
+  }, [batchImageMessages, batchImageSelectedDates, batchDecryptConcurrency, currentSessionId, finishDecrypt, sessions, startDecrypt, updateDecryptProgress])
 
   const batchImageCountByDate = useMemo(() => {
     const map = new Map<string, number>()
@@ -2622,6 +2639,39 @@ function ChatPage(_props: ChatPageProps) {
                 <div className="info-item">
                   <span className="label">已选:</span>
                   <span className="value">{batchImageSelectedDates.size} 天，共 {batchImageSelectedCount} 张图片</span>
+                </div>
+                <div className="info-item">
+                  <span className="label">并发数:</span>
+                  <div className="batch-concurrency-field">
+                    <button
+                      type="button"
+                      className={`batch-concurrency-trigger ${showConcurrencyDropdown ? 'open' : ''}`}
+                      onClick={() => setShowConcurrencyDropdown(!showConcurrencyDropdown)}
+                    >
+                      <span>{batchDecryptConcurrency === 1 ? '1（最慢，最稳）' : batchDecryptConcurrency === 6 ? '6（推荐）' : batchDecryptConcurrency === 20 ? '20（最快，可能卡顿）' : String(batchDecryptConcurrency)}</span>
+                      <ChevronDown size={14} />
+                    </button>
+                    {showConcurrencyDropdown && (
+                      <div className="batch-concurrency-dropdown">
+                        {[
+                          { value: 1, label: '1（最慢，最稳）' },
+                          { value: 3, label: '3' },
+                          { value: 6, label: '6（推荐）' },
+                          { value: 10, label: '10' },
+                          { value: 20, label: '20（最快，可能卡顿）' },
+                        ].map(opt => (
+                          <button
+                            key={opt.value}
+                            type="button"
+                            className={`batch-concurrency-option ${batchDecryptConcurrency === opt.value ? 'active' : ''}`}
+                            onClick={() => { setBatchDecryptConcurrency(opt.value); setShowConcurrencyDropdown(false) }}
+                          >
+                            {opt.label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
               <div className="batch-warning">

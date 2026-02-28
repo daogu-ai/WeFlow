@@ -301,7 +301,7 @@ export class ImageDecryptService {
       if (finalExt === '.hevc') {
         return {
           success: false,
-          error: '此图片为微信新格式(wxgf)，需要安装 ffmpeg 才能显示',
+          error: '此图片为微信新格式(wxgf)，ffmpeg 转换失败，请检查日志',
           isThumb: this.isThumbnailPath(datPath)
         }
       }
@@ -1833,21 +1833,24 @@ export class ImageDecryptService {
 
     // 提取 HEVC NALU 裸流
     const hevcData = this.extractHevcNalu(buffer)
-    if (!hevcData || hevcData.length < 100) {
-      return { data: buffer, isWxgf: true }
-    }
+    // 优先用提取的 NALU 裸流，提取失败则跳过 wxgf 头部直接用原始数据
+    const feedData = (hevcData && hevcData.length >= 100) ? hevcData : buffer.subarray(4)
+    this.logInfo('unwrapWxgf: 准备 ffmpeg 转换', {
+      naluExtracted: !!(hevcData && hevcData.length >= 100),
+      feedSize: feedData.length
+    })
 
     // 尝试用 ffmpeg 转换
     try {
-      const jpgData = await this.convertHevcToJpg(hevcData)
+      const jpgData = await this.convertHevcToJpg(feedData)
       if (jpgData && jpgData.length > 0) {
         return { data: jpgData, isWxgf: false }
       }
-    } catch {
-      // ffmpeg 转换失败
+    } catch (e) {
+      this.logError('unwrapWxgf: ffmpeg 转换失败', e)
     }
 
-    return { data: hevcData, isWxgf: true }
+    return { data: feedData, isWxgf: true }
   }
 
   /**
@@ -1914,50 +1917,92 @@ export class ImageDecryptService {
   /**
    * 使用 ffmpeg 将 HEVC 裸流转换为 JPG
    */
-  private convertHevcToJpg(hevcData: Buffer): Promise<Buffer | null> {
+  private async convertHevcToJpg(hevcData: Buffer): Promise<Buffer | null> {
     const ffmpeg = this.getFfmpegPath()
     this.logInfo('ffmpeg 转换开始', { ffmpegPath: ffmpeg, hevcSize: hevcData.length })
 
+    const tmpDir = join(app.getPath('temp'), 'weflow_hevc')
+    if (!existsSync(tmpDir)) mkdirSync(tmpDir, { recursive: true })
+    const ts = Date.now()
+    const tmpInput = join(tmpDir, `hevc_${ts}.hevc`)
+    const tmpOutput = join(tmpDir, `hevc_${ts}.jpg`)
+
+    try {
+      await writeFile(tmpInput, hevcData)
+
+      // 依次尝试: 1) -f hevc 裸流  2) 不指定格式让 ffmpeg 自动检测
+      const attempts: { label: string; inputArgs: string[] }[] = [
+        { label: 'hevc raw', inputArgs: ['-f', 'hevc', '-i', tmpInput] },
+        { label: 'auto detect', inputArgs: ['-i', tmpInput] },
+      ]
+
+      for (const attempt of attempts) {
+        // 清理上一轮的输出
+        try { if (existsSync(tmpOutput)) require('fs').unlinkSync(tmpOutput) } catch {}
+
+        const result = await this.runFfmpegConvert(ffmpeg, attempt.inputArgs, tmpOutput, attempt.label)
+        if (result) return result
+      }
+
+      return null
+    } catch (e) {
+      this.logError('ffmpeg 转换异常', e)
+      return null
+    } finally {
+      try { if (existsSync(tmpInput)) require('fs').unlinkSync(tmpInput) } catch {}
+      try { if (existsSync(tmpOutput)) require('fs').unlinkSync(tmpOutput) } catch {}
+    }
+  }
+
+  private runFfmpegConvert(ffmpeg: string, inputArgs: string[], tmpOutput: string, label: string): Promise<Buffer | null> {
     return new Promise((resolve) => {
       const { spawn } = require('child_process')
-      const chunks: Buffer[] = []
       const errChunks: Buffer[] = []
 
-      const proc = spawn(ffmpeg, [
-        '-hide_banner',
-        '-loglevel', 'error',
-        '-f', 'hevc',
-        '-i', 'pipe:0',
-        '-vframes', '1',
-        '-q:v', '3',
-        '-f', 'mjpeg',
-        'pipe:1'
-      ], {
-        stdio: ['pipe', 'pipe', 'pipe'],
+      const args = [
+        '-hide_banner', '-loglevel', 'error',
+        ...inputArgs,
+        '-vframes', '1', '-q:v', '2', '-f', 'image2', tmpOutput
+      ]
+      this.logInfo(`ffmpeg 尝试 [${label}]`, { args: args.join(' ') })
+
+      const proc = spawn(ffmpeg, args, {
+        stdio: ['ignore', 'ignore', 'pipe'],
         windowsHide: true
       })
 
-      proc.stdout.on('data', (chunk: Buffer) => chunks.push(chunk))
       proc.stderr.on('data', (chunk: Buffer) => errChunks.push(chunk))
 
-      proc.on('close', (code: number) => {
-        if (code === 0 && chunks.length > 0) {
-          this.logInfo('ffmpeg 转换成功', { outputSize: Buffer.concat(chunks).length })
-          resolve(Buffer.concat(chunks))
-        } else {
-          const errMsg = Buffer.concat(errChunks).toString()
-          this.logInfo('ffmpeg 转换失败', { code, error: errMsg })
-          resolve(null)
-        }
-      })
+      const timer = setTimeout(() => {
+        proc.kill('SIGKILL')
+        this.logError(`ffmpeg [${label}] 超时(15s)`)
+        resolve(null)
+      }, 15000)
 
-      proc.on('error', (err: Error) => {
-        this.logInfo('ffmpeg 进程错误', { error: err.message })
+      proc.on('close', (code: number) => {
+        clearTimeout(timer)
+        if (code === 0 && existsSync(tmpOutput)) {
+          try {
+            const jpgBuf = readFileSync(tmpOutput)
+            if (jpgBuf.length > 0) {
+              this.logInfo(`ffmpeg [${label}] 成功`, { outputSize: jpgBuf.length })
+              resolve(jpgBuf)
+              return
+            }
+          } catch (e) {
+            this.logError(`ffmpeg [${label}] 读取输出失败`, e)
+          }
+        }
+        const errMsg = Buffer.concat(errChunks).toString().trim()
+        this.logInfo(`ffmpeg [${label}] 失败`, { code, error: errMsg })
         resolve(null)
       })
 
-      proc.stdin.write(hevcData)
-      proc.stdin.end()
+      proc.on('error', (err: Error) => {
+        clearTimeout(timer)
+        this.logError(`ffmpeg [${label}] 进程错误`, err)
+        resolve(null)
+      })
     })
   }
 
