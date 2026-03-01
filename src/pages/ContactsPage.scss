@@ -177,6 +177,12 @@
     padding: 0 20px 12px;
     font-size: 13px;
     color: var(--text-secondary);
+
+    .avatar-enrich-progress {
+      margin-left: 10px;
+      color: var(--text-tertiary);
+      font-size: 12px;
+    }
   }
 
   .selection-toolbar {
@@ -217,6 +223,7 @@
     flex: 1;
     overflow-y: auto;
     padding: 0 12px 12px;
+    position: relative;
 
     &::-webkit-scrollbar {
       width: 6px;
@@ -229,15 +236,31 @@
     }
   }
 
+  .contacts-list-virtual {
+    position: relative;
+    min-height: 100%;
+  }
+
+  .contact-row {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 76px;
+    padding-bottom: 4px;
+    will-change: transform;
+  }
+
   .contact-item {
     display: flex;
     align-items: center;
     gap: 12px;
     padding: 12px;
+    height: 72px;
+    box-sizing: border-box;
     border-radius: 10px;
     transition: all 0.2s;
     cursor: pointer;
-    margin-bottom: 4px;
+    margin-bottom: 0;
 
     &:hover {
       background: var(--bg-hover);

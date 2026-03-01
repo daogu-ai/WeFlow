@@ -684,40 +684,52 @@ class ChatService {
 
       if (!headImageDbPath) return result
 
-      // 使用 wcdbService.execQuery 查询加密的 head_image.db
-      for (const username of usernames) {
-        try {
-          const escapedUsername = username.replace(/'/g, "''")
-          const queryResult = await wcdbService.execQuery(
-            'media',
-            headImageDbPath,
-            `SELECT image_buffer FROM head_image WHERE username = '${escapedUsername}' LIMIT 1`
-          )
+      const normalizedUsernames = Array.from(
+        new Set(
+          usernames
+            .map((username) => String(username || '').trim())
+            .filter(Boolean)
+        )
+      )
+      if (normalizedUsernames.length === 0) return result
 
-          if (queryResult.success && queryResult.rows && queryResult.rows.length > 0) {
-            const row = queryResult.rows[0] as any
-            if (row?.image_buffer) {
-              let base64Data: string
-              if (typeof row.image_buffer === 'string') {
-                // WCDB 返回的 BLOB 是十六进制字符串，需要转换为 base64
-                if (row.image_buffer.toLowerCase().startsWith('ffd8')) {
-                  const buffer = Buffer.from(row.image_buffer, 'hex')
-                  base64Data = buffer.toString('base64')
-                } else {
-                  base64Data = row.image_buffer
-                }
-              } else if (Buffer.isBuffer(row.image_buffer)) {
-                base64Data = row.image_buffer.toString('base64')
-              } else if (Array.isArray(row.image_buffer)) {
-                base64Data = Buffer.from(row.image_buffer).toString('base64')
-              } else {
-                continue
-              }
-              result[username] = `data:image/jpeg;base64,${base64Data}`
+      const batchSize = 320
+      for (let i = 0; i < normalizedUsernames.length; i += batchSize) {
+        const batch = normalizedUsernames.slice(i, i + batchSize)
+        if (batch.length === 0) continue
+        const usernamesExpr = batch.map((name) => `'${this.escapeSqlString(name)}'`).join(',')
+        const queryResult = await wcdbService.execQuery(
+          'media',
+          headImageDbPath,
+          `SELECT username, image_buffer FROM head_image WHERE username IN (${usernamesExpr})`
+        )
+
+        if (!queryResult.success || !queryResult.rows || queryResult.rows.length === 0) {
+          continue
+        }
+
+        for (const row of queryResult.rows as any[]) {
+          const username = String(row?.username || '').trim()
+          if (!username || !row?.image_buffer) continue
+
+          let base64Data: string | null = null
+          if (typeof row.image_buffer === 'string') {
+            // WCDB 返回的 BLOB 可能是十六进制字符串，需要转换为 base64
+            if (row.image_buffer.toLowerCase().startsWith('ffd8')) {
+              const buffer = Buffer.from(row.image_buffer, 'hex')
+              base64Data = buffer.toString('base64')
+            } else {
+              base64Data = row.image_buffer
             }
+          } else if (Buffer.isBuffer(row.image_buffer)) {
+            base64Data = row.image_buffer.toString('base64')
+          } else if (Array.isArray(row.image_buffer)) {
+            base64Data = Buffer.from(row.image_buffer).toString('base64')
           }
-        } catch {
-          // 静默处理单个用户的错误
+
+          if (base64Data) {
+            result[username] = `data:image/jpeg;base64,${base64Data}`
+          }
         }
       }
     } catch (e) {
@@ -949,11 +961,17 @@ class ChatService {
       // 使用execQuery直接查询加密的contact.db
       // kind='contact', path=null表示使用已打开的contact.db
       const contactQuery = `
-        SELECT username, remark, nick_name, alias, local_type, flag, quan_pin
+        SELECT username, remark, nick_name, alias, local_type, quan_pin
         FROM contact
+        WHERE username IS NOT NULL
+          AND username != ''
+          AND (
+            username LIKE '%@chatroom'
+            OR username LIKE 'gh_%'
+            OR local_type = 1
+            OR (local_type = 0 AND COALESCE(quan_pin, '') != '')
+          )
       `
-
-
       const contactResult = await wcdbService.execQuery('contact', null, contactQuery)
 
       if (!contactResult.success || !contactResult.rows) {
@@ -963,21 +981,6 @@ class ChatService {
 
 
       const rows = contactResult.rows as Record<string, any>[]
-
-      // 调试：显示前5条数据样本
-
-      rows.slice(0, 5).forEach((row, idx) => {
-
-      })
-
-      // 调试：统计local_type分布
-      const localTypeStats = new Map<number, number>()
-      rows.forEach(row => {
-        const lt = row.local_type || 0
-        localTypeStats.set(lt, (localTypeStats.get(lt) || 0) + 1)
-      })
-
-
       // 获取会话表的最后联系时间用于排序
       const lastContactTimeMap = new Map<string, number>()
       const sessionResult = await wcdbService.getSessions()
@@ -993,25 +996,24 @@ class ChatService {
 
       // 转换为ContactInfo
       const contacts: (ContactInfo & { lastContactTime: number })[] = []
+      const excludeNames = new Set(['medianote', 'floatbottle', 'qmessage', 'qqmail', 'fmessage'])
 
       for (const row of rows) {
-        const username = row.username || ''
+        const username = String(row.username || '').trim()
 
         if (!username) continue
 
-        const excludeNames = ['medianote', 'floatbottle', 'qmessage', 'qqmail', 'fmessage']
         let type: 'friend' | 'group' | 'official' | 'former_friend' | 'other' = 'other'
         const localType = this.getRowInt(row, ['local_type', 'localType', 'WCDB_CT_local_type'], 0)
-        const flag = Number(row.flag ?? 0)
-        const quanPin = this.getRowField(row, ['quan_pin', 'quanPin', 'WCDB_CT_quan_pin']) || ''
+        const quanPin = String(this.getRowField(row, ['quan_pin', 'quanPin', 'WCDB_CT_quan_pin']) || '').trim()
 
-        if (username.includes('@chatroom')) {
+        if (username.endsWith('@chatroom')) {
           type = 'group'
         } else if (username.startsWith('gh_')) {
           type = 'official'
-        } else if (/^(?!.*(gh_|@chatroom)).*$/.test(username) && localType === 1 && !excludeNames.includes(username)) {
+        } else if (localType === 1 && !excludeNames.has(username)) {
           type = 'friend'
-        } else if (/^(?!.*(gh_|@chatroom)).*$/.test(username) && localType === 0 && quanPin) {
+        } else if (localType === 0 && quanPin) {
           type = 'former_friend'
         } else {
           continue
