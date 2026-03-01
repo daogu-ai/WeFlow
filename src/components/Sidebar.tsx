@@ -12,6 +12,42 @@ interface SidebarUserProfile {
   avatarUrl?: string
 }
 
+const SIDEBAR_USER_PROFILE_CACHE_KEY = 'sidebar_user_profile_cache_v1'
+
+interface SidebarUserProfileCache extends SidebarUserProfile {
+  updatedAt: number
+}
+
+const readSidebarUserProfileCache = (): SidebarUserProfile | null => {
+  try {
+    const raw = window.localStorage.getItem(SIDEBAR_USER_PROFILE_CACHE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as SidebarUserProfileCache
+    if (!parsed || typeof parsed !== 'object') return null
+    if (!parsed.wxid || !parsed.displayName) return null
+    return {
+      wxid: parsed.wxid,
+      displayName: parsed.displayName,
+      avatarUrl: parsed.avatarUrl
+    }
+  } catch {
+    return null
+  }
+}
+
+const writeSidebarUserProfileCache = (profile: SidebarUserProfile): void => {
+  if (!profile.wxid || !profile.displayName) return
+  try {
+    const payload: SidebarUserProfileCache = {
+      ...profile,
+      updatedAt: Date.now()
+    }
+    window.localStorage.setItem(SIDEBAR_USER_PROFILE_CACHE_KEY, JSON.stringify(payload))
+  } catch {
+    // 忽略本地缓存失败，不影响主流程
+  }
+}
+
 function Sidebar() {
   const location = useLocation()
   const [collapsed, setCollapsed] = useState(false)
@@ -28,57 +64,91 @@ function Sidebar() {
 
   useEffect(() => {
     const loadCurrentUser = async () => {
+      const normalizeName = (value?: string | null): string | undefined => {
+        if (!value) return undefined
+        const trimmed = value.trim()
+        if (!trimmed || trimmed.toLowerCase() === 'self') return undefined
+        return trimmed
+      }
+
+      const patchUserProfile = (patch: Partial<SidebarUserProfile>, expectedWxid?: string) => {
+        setUserProfile(prev => {
+          if (expectedWxid && prev.wxid && prev.wxid !== expectedWxid) {
+            return prev
+          }
+          const next: SidebarUserProfile = {
+            ...prev,
+            ...patch
+          }
+          if (!next.displayName) {
+            next.displayName = next.wxid || '未识别用户'
+          }
+          writeSidebarUserProfileCache(next)
+          return next
+        })
+      }
+
       try {
         const wxid = await configService.getMyWxid()
-        let displayName = wxid || '未识别用户'
+        const resolvedWxid = wxid || ''
+        const fallbackDisplayName = resolvedWxid || '未识别用户'
 
-        const normalizeName = (value?: string | null): string | undefined => {
-          if (!value) return undefined
-          const trimmed = value.trim()
-          if (!trimmed || trimmed.toLowerCase() === 'self') return undefined
-          return trimmed
-        }
-
-        let enrichedDisplayName: string | undefined
-        let fallbackSelfName: string | undefined
-
-        if (wxid) {
-          const [myContact, enrichedResult] = await Promise.all([
-            window.electronAPI.chat.getContact(wxid),
-            window.electronAPI.chat.enrichSessionsContactInfo([wxid, 'self'])
-          ])
-
-          enrichedDisplayName = normalizeName(enrichedResult.contacts?.[wxid]?.displayName)
-          fallbackSelfName = normalizeName(enrichedResult.contacts?.self?.displayName)
-
-          const bestName =
-            normalizeName(myContact?.remark) ||
-            normalizeName(myContact?.nickName) ||
-            normalizeName(myContact?.alias) ||
-            enrichedDisplayName ||
-            fallbackSelfName
-
-          if (bestName) {
-            displayName = bestName
-          } else if (fallbackSelfName && fallbackSelfName !== wxid) {
-            displayName = fallbackSelfName
-          }
-        }
-
-        let avatarUrl: string | undefined
-        const avatarResult = await window.electronAPI.chat.getMyAvatarUrl()
-        if (avatarResult.success && avatarResult.avatarUrl) {
-          avatarUrl = avatarResult.avatarUrl
-        }
-
-        setUserProfile({
-          wxid: wxid || '',
-          displayName,
-          avatarUrl
+        // 第一阶段：先把 wxid/名称打上，保证侧边栏第一时间可见。
+        patchUserProfile({
+          wxid: resolvedWxid,
+          displayName: fallbackDisplayName
         })
+
+        if (!resolvedWxid) return
+
+        // 第二阶段：后台补齐名称（不会阻塞首屏）。
+        void (async () => {
+          try {
+            const myContact = await window.electronAPI.chat.getContact(resolvedWxid)
+            const fromContact =
+              normalizeName(myContact?.remark) ||
+              normalizeName(myContact?.nickName) ||
+              normalizeName(myContact?.alias)
+
+            if (fromContact) {
+              patchUserProfile({ displayName: fromContact }, resolvedWxid)
+              return
+            }
+
+            const enrichedResult = await window.electronAPI.chat.enrichSessionsContactInfo([resolvedWxid, 'self'])
+            const enrichedDisplayName = normalizeName(enrichedResult.contacts?.[resolvedWxid]?.displayName)
+            const fallbackSelfName = normalizeName(enrichedResult.contacts?.self?.displayName)
+            const bestName = enrichedDisplayName || fallbackSelfName
+            if (bestName) {
+              patchUserProfile({ displayName: bestName }, resolvedWxid)
+            }
+          } catch (nameError) {
+            console.error('加载侧边栏用户昵称失败:', nameError)
+          }
+        })()
+
+        // 第二阶段：后台补齐头像（不会阻塞首屏）。
+        void (async () => {
+          try {
+            const avatarResult = await window.electronAPI.chat.getMyAvatarUrl()
+            if (avatarResult.success && avatarResult.avatarUrl) {
+              patchUserProfile({ avatarUrl: avatarResult.avatarUrl }, resolvedWxid)
+            }
+          } catch (avatarError) {
+            console.error('加载侧边栏用户头像失败:', avatarError)
+          }
+        })()
       } catch (error) {
         console.error('加载侧边栏用户信息失败:', error)
       }
+    }
+
+    const cachedProfile = readSidebarUserProfileCache()
+    if (cachedProfile) {
+      setUserProfile(prev => ({
+        ...prev,
+        ...cachedProfile
+      }))
     }
 
     void loadCurrentUser()
