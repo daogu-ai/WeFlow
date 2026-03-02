@@ -50,7 +50,7 @@ type SessionLayout = 'shared' | 'per-session'
 
 type DisplayNamePreference = 'group-nickname' | 'remark' | 'nickname'
 
-type TextExportFormat = 'chatlab' | 'chatlab-jsonl' | 'json' | 'html' | 'txt' | 'excel' | 'weclone' | 'sql'
+type TextExportFormat = 'chatlab' | 'chatlab-jsonl' | 'json' | 'arkme-json' | 'html' | 'txt' | 'excel' | 'weclone' | 'sql'
 
 interface ExportOptions {
   format: TextExportFormat
@@ -134,6 +134,7 @@ const formatOptions: Array<{ value: TextExportFormat; label: string; desc: strin
   { value: 'chatlab', label: 'ChatLab', desc: '标准格式，支持其他软件导入' },
   { value: 'chatlab-jsonl', label: 'ChatLab JSONL', desc: '流式格式，适合大量消息' },
   { value: 'json', label: 'JSON', desc: '详细格式，包含完整消息信息' },
+  { value: 'arkme-json', label: 'Arkme JSON', desc: '紧凑 JSON，支持 sender 去重与关系统计' },
   { value: 'html', label: 'HTML', desc: '网页格式，可直接浏览' },
   { value: 'txt', label: 'TXT', desc: '纯文本，通用格式' },
   { value: 'excel', label: 'Excel', desc: '电子表格，适合统计分析' },
@@ -662,6 +663,7 @@ function ExportPage() {
   const contactsListRef = useRef<HTMLDivElement>(null)
   const detailRequestSeqRef = useRef(0)
   const inProgressSessionIdsRef = useRef<string[]>([])
+  const activeTaskCountRef = useRef(0)
   const hasBaseConfigReadyRef = useRef(false)
 
   const ensureExportCacheScope = useCallback(async (): Promise<string> => {
@@ -2180,10 +2182,18 @@ function ExportPage() {
     }
     return Array.from(set).sort()
   }, [tasks])
+  const activeTaskCount = useMemo(
+    () => tasks.filter(task => task.status === 'running' || task.status === 'queued').length,
+    [tasks]
+  )
 
   const inProgressSessionIdsKey = useMemo(
     () => inProgressSessionIds.join('||'),
     [inProgressSessionIds]
+  )
+  const inProgressStatusKey = useMemo(
+    () => `${activeTaskCount}::${inProgressSessionIdsKey}`,
+    [activeTaskCount, inProgressSessionIdsKey]
   )
 
   useEffect(() => {
@@ -2191,15 +2201,21 @@ function ExportPage() {
   }, [inProgressSessionIds])
 
   useEffect(() => {
+    activeTaskCountRef.current = activeTaskCount
+  }, [activeTaskCount])
+
+  useEffect(() => {
     emitExportSessionStatus({
-      inProgressSessionIds: inProgressSessionIdsRef.current
+      inProgressSessionIds: inProgressSessionIdsRef.current,
+      activeTaskCount: activeTaskCountRef.current
     })
-  }, [inProgressSessionIdsKey])
+  }, [inProgressStatusKey])
 
   useEffect(() => {
     const unsubscribe = onExportSessionStatusRequest(() => {
       emitExportSessionStatus({
-        inProgressSessionIds: inProgressSessionIdsRef.current
+        inProgressSessionIds: inProgressSessionIdsRef.current,
+        activeTaskCount: activeTaskCountRef.current
       })
     })
     return unsubscribe

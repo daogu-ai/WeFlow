@@ -69,7 +69,7 @@ const MESSAGE_TYPE_MAP: Record<number, number> = {
 }
 
 export interface ExportOptions {
-  format: 'chatlab' | 'chatlab-jsonl' | 'json' | 'html' | 'txt' | 'excel' | 'weclone' | 'sql'
+  format: 'chatlab' | 'chatlab-jsonl' | 'json' | 'arkme-json' | 'html' | 'txt' | 'excel' | 'weclone' | 'sql'
   dateRange?: { start: number; end: number } | null
   senderUsername?: string
   fileNameSuffix?: string
@@ -2139,6 +2139,217 @@ class ExportService {
     }
   }
 
+  private extractGroupMemberUsername(member: any): string {
+    if (!member) return ''
+    if (typeof member === 'string') return member.trim()
+    return String(
+      member.username ||
+      member.userName ||
+      member.user_name ||
+      member.encryptUsername ||
+      member.encryptUserName ||
+      member.encrypt_username ||
+      member.originalName ||
+      ''
+    ).trim()
+  }
+
+  private extractGroupSenderCountMap(groupStats: any, sessionId: string): Map<string, number> {
+    const senderCountMap = new Map<string, number>()
+    if (!groupStats || typeof groupStats !== 'object') return senderCountMap
+
+    const sessions = (groupStats as any).sessions
+    const sessionStats = sessions && typeof sessions === 'object'
+      ? (sessions[sessionId] || sessions[String(sessionId)] || null)
+      : null
+    const senderRaw = (sessionStats && typeof sessionStats === 'object' && (sessionStats as any).senders && typeof (sessionStats as any).senders === 'object')
+      ? (sessionStats as any).senders
+      : ((groupStats as any).senders && typeof (groupStats as any).senders === 'object' ? (groupStats as any).senders : {})
+    const idMap = (groupStats as any).idMap && typeof (groupStats as any).idMap === 'object'
+      ? (groupStats as any).idMap
+      : ((sessionStats && typeof sessionStats === 'object' && (sessionStats as any).idMap && typeof (sessionStats as any).idMap === 'object')
+        ? (sessionStats as any).idMap
+        : {})
+
+    for (const [senderKey, rawCount] of Object.entries(senderRaw)) {
+      const countNumber = Number(rawCount)
+      if (!Number.isFinite(countNumber) || countNumber <= 0) continue
+      const count = Math.max(0, Math.floor(countNumber))
+      const mapped = typeof (idMap as any)[senderKey] === 'string' ? String((idMap as any)[senderKey]).trim() : ''
+      const wxid = (mapped || String(senderKey || '').trim())
+      if (!wxid) continue
+      senderCountMap.set(wxid, (senderCountMap.get(wxid) || 0) + count)
+    }
+
+    return senderCountMap
+  }
+
+  private sumSenderCountsByIdentity(senderCountMap: Map<string, number>, wxid: string): number {
+    const target = String(wxid || '').trim()
+    if (!target) return 0
+    let total = 0
+    for (const [senderWxid, count] of senderCountMap.entries()) {
+      if (!Number.isFinite(count) || count <= 0) continue
+      if (this.isSameWxid(senderWxid, target)) {
+        total += count
+      }
+    }
+    return total
+  }
+
+  private async queryFriendFlagMap(usernames: string[]): Promise<Map<string, boolean>> {
+    const result = new Map<string, boolean>()
+    const unique = Array.from(
+      new Set((usernames || []).map((username) => String(username || '').trim()).filter(Boolean))
+    )
+    if (unique.length === 0) return result
+
+    const BATCH = 200
+    for (let i = 0; i < unique.length; i += BATCH) {
+      const batch = unique.slice(i, i + BATCH)
+      const inList = batch.map((username) => `'${username.replace(/'/g, "''")}'`).join(',')
+      const sql = `SELECT username, local_type FROM contact WHERE username IN (${inList})`
+      const query = await wcdbService.execQuery('contact', null, sql)
+      if (!query.success || !query.rows) continue
+      for (const row of query.rows) {
+        const username = String((row as any).username || '').trim()
+        if (!username) continue
+        const localType = Number.parseInt(String((row as any).local_type ?? (row as any).localType ?? (row as any).WCDB_CT_local_type ?? ''), 10)
+        result.set(username, Number.isFinite(localType) && localType === 1)
+      }
+    }
+
+    for (const username of unique) {
+      if (!result.has(username)) {
+        result.set(username, false)
+      }
+    }
+
+    return result
+  }
+
+  private async collectPrivateMutualGroupStats(
+    privateWxid: string,
+    myWxid: string
+  ): Promise<{
+    totalGroups: number
+    totalMessagesByMe: number
+    totalMessagesByPeer: number
+    totalMessagesCombined: number
+    groups: Array<{
+      wxid: string
+      displayName: string
+      myMessageCount: number
+      peerMessageCount: number
+      totalMessageCount: number
+    }>
+  }> {
+    const normalizedPrivateWxid = String(privateWxid || '').trim()
+    const normalizedMyWxid = String(myWxid || '').trim()
+    if (!normalizedPrivateWxid || !normalizedMyWxid) {
+      return {
+        totalGroups: 0,
+        totalMessagesByMe: 0,
+        totalMessagesByPeer: 0,
+        totalMessagesCombined: 0,
+        groups: []
+      }
+    }
+
+    const sessionsResult = await wcdbService.getSessions()
+    if (!sessionsResult.success || !sessionsResult.sessions) {
+      return {
+        totalGroups: 0,
+        totalMessagesByMe: 0,
+        totalMessagesByPeer: 0,
+        totalMessagesCombined: 0,
+        groups: []
+      }
+    }
+
+    const groupIds = Array.from(
+      new Set(
+        (sessionsResult.sessions as Array<Record<string, any>>)
+          .map((row) => String(row.username || row.user_name || row.userName || '').trim())
+          .filter((username) => username.endsWith('@chatroom'))
+      )
+    )
+    if (groupIds.length === 0) {
+      return {
+        totalGroups: 0,
+        totalMessagesByMe: 0,
+        totalMessagesByPeer: 0,
+        totalMessagesCombined: 0,
+        groups: []
+      }
+    }
+
+    const mutualGroups = await parallelLimit(groupIds, 4, async (groupId) => {
+      const membersResult = await wcdbService.getGroupMembers(groupId)
+      if (!membersResult.success || !membersResult.members || membersResult.members.length === 0) {
+        return null
+      }
+
+      let hasMe = false
+      let hasPeer = false
+      for (const member of membersResult.members) {
+        const memberWxid = this.extractGroupMemberUsername(member)
+        if (!memberWxid) continue
+        if (!hasMe && this.isSameWxid(memberWxid, normalizedMyWxid)) {
+          hasMe = true
+        }
+        if (!hasPeer && this.isSameWxid(memberWxid, normalizedPrivateWxid)) {
+          hasPeer = true
+        }
+        if (hasMe && hasPeer) break
+      }
+      if (!hasMe || !hasPeer) return null
+
+      const [groupInfo, groupStatsResult] = await Promise.all([
+        this.getContactInfo(groupId),
+        wcdbService.getGroupStats(groupId, 0, 0)
+      ])
+      const senderCountMap = groupStatsResult.success && groupStatsResult.data
+        ? this.extractGroupSenderCountMap(groupStatsResult.data, groupId)
+        : new Map<string, number>()
+      const myMessageCount = this.sumSenderCountsByIdentity(senderCountMap, normalizedMyWxid)
+      const peerMessageCount = this.sumSenderCountsByIdentity(senderCountMap, normalizedPrivateWxid)
+      const totalMessageCount = myMessageCount + peerMessageCount
+
+      return {
+        wxid: groupId,
+        displayName: groupInfo.displayName || groupId,
+        myMessageCount,
+        peerMessageCount,
+        totalMessageCount
+      }
+    })
+
+    const groups = mutualGroups
+      .filter((item): item is {
+        wxid: string
+        displayName: string
+        myMessageCount: number
+        peerMessageCount: number
+        totalMessageCount: number
+      } => Boolean(item))
+      .sort((a, b) => {
+        if (b.totalMessageCount !== a.totalMessageCount) return b.totalMessageCount - a.totalMessageCount
+        return a.displayName.localeCompare(b.displayName, 'zh-CN')
+      })
+
+    const totalMessagesByMe = groups.reduce((sum, item) => sum + item.myMessageCount, 0)
+    const totalMessagesByPeer = groups.reduce((sum, item) => sum + item.peerMessageCount, 0)
+
+    return {
+      totalGroups: groups.length,
+      totalMessagesByMe,
+      totalMessagesByPeer,
+      totalMessagesCombined: totalMessagesByMe + totalMessagesByPeer,
+      groups
+    }
+  }
+
   private resolveAvatarFile(avatarUrl?: string): { data?: Buffer; sourcePath?: string; sourceUrl?: string; ext: string; mime?: string } | null {
     if (!avatarUrl) return null
     if (avatarUrl.startsWith('data:')) {
@@ -2937,6 +3148,12 @@ class ExportService {
       })
 
       const allMessages: any[] = []
+      const senderProfileMap = new Map<string, {
+        displayName: string
+        nickname: string
+        remark: string
+        groupNickname: string
+      }>()
       for (const msg of collected.rows) {
         const senderInfo = await this.getContactInfo(msg.senderUsername)
         const sourceMatch = /<msgsource>[\s\S]*?<\/msgsource>/i.exec(msg.content || '')
@@ -2998,6 +3215,29 @@ class ExportService {
           senderGroupNickname,
           options.displayNamePreference || 'remark'
         )
+        const existingSenderProfile = senderProfileMap.get(senderWxid)
+        if (!existingSenderProfile) {
+          senderProfileMap.set(senderWxid, {
+            displayName: senderDisplayName,
+            nickname: senderNickname,
+            remark: senderRemark,
+            groupNickname: senderGroupNickname
+          })
+        } else {
+          if (!existingSenderProfile.displayName && senderDisplayName) {
+            existingSenderProfile.displayName = senderDisplayName
+          }
+          if (!existingSenderProfile.nickname && senderNickname) {
+            existingSenderProfile.nickname = senderNickname
+          }
+          if (!existingSenderProfile.remark && senderRemark) {
+            existingSenderProfile.remark = senderRemark
+          }
+          if (!existingSenderProfile.groupNickname && senderGroupNickname) {
+            existingSenderProfile.groupNickname = senderGroupNickname
+          }
+          senderProfileMap.set(senderWxid, existingSenderProfile)
+        }
 
         const msgObj: any = {
           localId: allMessages.length + 1,
@@ -3033,8 +3273,6 @@ class ExportService {
         phase: 'writing'
       })
 
-      const { chatlab, meta } = this.getExportMeta(sessionId, sessionInfo, isGroup)
-
       // 获取会话的昵称和备注信息
       const sessionContact = await getContactCached(sessionId)
       const sessionNickname = sessionContact.success && sessionContact.contact?.nickName
@@ -3057,45 +3295,227 @@ class ExportService {
       )
 
       const weflow = this.getWeflowHeader()
-      const detailedExport: any = {
-        weflow,
-        session: {
-          wxid: sessionId,
-          nickname: sessionNickname,
-          remark: sessionRemark,
-          displayName: sessionDisplayName,
-          type: isGroup ? '群聊' : '私聊',
-          lastTimestamp: collected.lastTime,
-          messageCount: allMessages.length,
-          avatar: undefined as string | undefined
-        },
-        messages: allMessages
+      if (options.format === 'arkme-json' && isGroup) {
+        await this.mergeGroupMembers(sessionId, collected.memberSet, options.exportAvatars === true)
       }
 
-      if (options.exportAvatars) {
-        const avatarMap = await this.exportAvatars(
+      const avatarMap = options.exportAvatars
+        ? await this.exportAvatars(
           [
             ...Array.from(collected.memberSet.entries()).map(([username, info]) => ({
               username,
               avatarUrl: info.avatarUrl
             })),
-            { username: sessionId, avatarUrl: sessionInfo.avatarUrl }
+            { username: sessionId, avatarUrl: sessionInfo.avatarUrl },
+            { username: cleanedMyWxid, avatarUrl: myInfo.avatarUrl }
           ]
         )
-        const avatars: Record<string, string> = {}
-        for (const [username, relPath] of avatarMap.entries()) {
-          avatars[username] = relPath
-        }
-        if (Object.keys(avatars).length > 0) {
-          detailedExport.session = {
-            ...detailedExport.session,
-            avatar: avatars[sessionId]
-          }
-            ; (detailedExport as any).avatars = avatars
-        }
+        : new Map<string, string>()
+
+      const sessionPayload: any = {
+        wxid: sessionId,
+        nickname: sessionNickname,
+        remark: sessionRemark,
+        displayName: sessionDisplayName,
+        type: isGroup ? '群聊' : '私聊',
+        lastTimestamp: collected.lastTime,
+        messageCount: allMessages.length,
+        avatar: avatarMap.get(sessionId)
       }
 
-      fs.writeFileSync(outputPath, JSON.stringify(detailedExport, null, 2), 'utf-8')
+      if (options.format === 'arkme-json') {
+        const senderIdMap = new Map<string, number>()
+        const senders: Array<{
+          senderID: number
+          wxid: string
+          displayName: string
+          nickname: string
+          remark?: string
+          groupNickname?: string
+          avatar?: string
+        }> = []
+        const ensureSenderId = (senderWxidRaw: string): number => {
+          const senderWxid = String(senderWxidRaw || '').trim() || 'unknown'
+          const existed = senderIdMap.get(senderWxid)
+          if (existed) return existed
+
+          const senderID = senders.length + 1
+          senderIdMap.set(senderWxid, senderID)
+
+          const profile = senderProfileMap.get(senderWxid)
+          const senderItem: {
+            senderID: number
+            wxid: string
+            displayName: string
+            nickname: string
+            remark?: string
+            groupNickname?: string
+            avatar?: string
+          } = {
+            senderID,
+            wxid: senderWxid,
+            displayName: profile?.displayName || senderWxid,
+            nickname: profile?.nickname || profile?.displayName || senderWxid
+          }
+          if (profile?.remark) senderItem.remark = profile.remark
+          if (profile?.groupNickname) senderItem.groupNickname = profile.groupNickname
+          const avatar = avatarMap.get(senderWxid)
+          if (avatar) senderItem.avatar = avatar
+
+          senders.push(senderItem)
+          return senderID
+        }
+
+        const compactMessages = allMessages.map((message) => {
+          const senderID = ensureSenderId(String(message.senderUsername || ''))
+          const compactMessage: any = {
+            localId: message.localId,
+            createTime: message.createTime,
+            formattedTime: message.formattedTime,
+            type: message.type,
+            localType: message.localType,
+            content: message.content,
+            isSend: message.isSend,
+            senderID,
+            source: message.source
+          }
+          if (message.locationLat != null) compactMessage.locationLat = message.locationLat
+          if (message.locationLng != null) compactMessage.locationLng = message.locationLng
+          if (message.locationPoiname) compactMessage.locationPoiname = message.locationPoiname
+          if (message.locationLabel) compactMessage.locationLabel = message.locationLabel
+          return compactMessage
+        })
+
+        const arkmeSession: any = {
+          ...sessionPayload
+        }
+        let privateMutualGroups: {
+          totalGroups: number
+          totalMessagesByMe: number
+          totalMessagesByPeer: number
+          totalMessagesCombined: number
+          groups: Array<{
+            wxid: string
+            displayName: string
+            myMessageCount: number
+            peerMessageCount: number
+            totalMessageCount: number
+          }>
+        } | undefined
+        let groupMembers: Array<{
+          wxid: string
+          displayName: string
+          nickname: string
+          remark: string
+          alias: string
+          groupNickname?: string
+          isFriend: boolean
+          messageCount: number
+          avatar?: string
+        }> | undefined
+
+        if (isGroup) {
+          const memberUsernames = Array.from(collected.memberSet.keys()).filter(Boolean)
+          await this.preloadContacts(memberUsernames, contactCache)
+          const friendLookupUsernames = this.buildGroupNicknameIdCandidates(memberUsernames)
+          const friendFlagMap = await this.queryFriendFlagMap(friendLookupUsernames)
+          const groupStatsResult = await wcdbService.getGroupStats(sessionId, 0, 0)
+          const groupSenderCountMap = groupStatsResult.success && groupStatsResult.data
+            ? this.extractGroupSenderCountMap(groupStatsResult.data, sessionId)
+            : new Map<string, number>()
+
+          groupMembers = []
+          for (const memberWxid of memberUsernames) {
+            const member = collected.memberSet.get(memberWxid)?.member
+            const contactResult = await getContactCached(memberWxid)
+            const contact = contactResult.success ? contactResult.contact : null
+            const nickname = String(contact?.nickName || contact?.nick_name || member?.accountName || memberWxid)
+            const remark = String(contact?.remark || '')
+            const alias = String(contact?.alias || '')
+            const groupNickname = member?.groupNickname || this.resolveGroupNicknameByCandidates(
+              groupNicknamesMap,
+              [memberWxid, contact?.username, contact?.userName, contact?.encryptUsername, contact?.encryptUserName, alias]
+            ) || ''
+            const displayName = this.getPreferredDisplayName(
+              memberWxid,
+              nickname,
+              remark,
+              groupNickname,
+              options.displayNamePreference || 'remark'
+            )
+
+            const groupMember: {
+              wxid: string
+              displayName: string
+              nickname: string
+              remark: string
+              alias: string
+              groupNickname?: string
+              isFriend: boolean
+              messageCount: number
+              avatar?: string
+            } = {
+              wxid: memberWxid,
+              displayName,
+              nickname,
+              remark,
+              alias,
+              isFriend: this.buildGroupNicknameIdCandidates([memberWxid]).some((candidate) => friendFlagMap.get(candidate) === true),
+              messageCount: this.sumSenderCountsByIdentity(groupSenderCountMap, memberWxid)
+            }
+            if (groupNickname) groupMember.groupNickname = groupNickname
+            const avatar = avatarMap.get(memberWxid)
+            if (avatar) groupMember.avatar = avatar
+            groupMembers.push(groupMember)
+          }
+          groupMembers.sort((a, b) => {
+            if (b.messageCount !== a.messageCount) return b.messageCount - a.messageCount
+            return String(a.displayName || a.wxid).localeCompare(String(b.displayName || b.wxid), 'zh-CN')
+          })
+        } else if (!sessionId.startsWith('gh_')) {
+          privateMutualGroups = await this.collectPrivateMutualGroupStats(sessionId, cleanedMyWxid)
+        }
+
+        const arkmeExport: any = {
+          weflow: {
+            ...weflow,
+            format: 'arkme-json'
+          },
+          session: arkmeSession,
+          senders,
+          messages: compactMessages
+        }
+        if (privateMutualGroups) {
+          arkmeExport.privateMutualGroups = privateMutualGroups
+        }
+        if (groupMembers) {
+          arkmeExport.groupMembers = groupMembers
+        }
+
+        fs.writeFileSync(outputPath, JSON.stringify(arkmeExport, null, 2), 'utf-8')
+      } else {
+        const detailedExport: any = {
+          weflow,
+          session: sessionPayload,
+          messages: allMessages
+        }
+
+        if (options.exportAvatars) {
+          const avatars: Record<string, string> = {}
+          for (const [username, relPath] of avatarMap.entries()) {
+            avatars[username] = relPath
+          }
+          if (Object.keys(avatars).length > 0) {
+            detailedExport.session = {
+              ...detailedExport.session,
+              avatar: avatars[sessionId]
+            }
+            ; (detailedExport as any).avatars = avatars
+          }
+        }
+
+        fs.writeFileSync(outputPath, JSON.stringify(detailedExport, null, 2), 'utf-8')
+      }
 
       onProgress?.({
         current: 100,
@@ -4882,7 +5302,7 @@ class ExportService {
         const outputPath = path.join(sessionDir, `${fileNameWithPrefix}${ext}`)
 
         let result: { success: boolean; error?: string }
-        if (options.format === 'json') {
+        if (options.format === 'json' || options.format === 'arkme-json') {
           result = await this.exportSessionToDetailedJson(sessionId, outputPath, options, sessionProgress)
         } else if (options.format === 'chatlab' || options.format === 'chatlab-jsonl') {
           result = await this.exportSessionToChatLab(sessionId, outputPath, options, sessionProgress)

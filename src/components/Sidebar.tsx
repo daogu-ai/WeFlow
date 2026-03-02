@@ -3,6 +3,7 @@ import { NavLink, useLocation } from 'react-router-dom'
 import { Home, MessageSquare, BarChart3, Users, FileText, Database, Settings, ChevronLeft, ChevronRight, Download, Aperture, UserCircle, Lock } from 'lucide-react'
 import { useAppStore } from '../stores/appStore'
 import * as configService from '../services/config'
+import { onExportSessionStatus, requestExportSessionStatus } from '../services/exportBridge'
 
 import './Sidebar.scss'
 
@@ -52,6 +53,7 @@ function Sidebar() {
   const location = useLocation()
   const [collapsed, setCollapsed] = useState(false)
   const [authEnabled, setAuthEnabled] = useState(false)
+  const [activeExportTaskCount, setActiveExportTaskCount] = useState(0)
   const [userProfile, setUserProfile] = useState<SidebarUserProfile>({
     wxid: '',
     displayName: '未识别用户'
@@ -60,6 +62,26 @@ function Sidebar() {
 
   useEffect(() => {
     window.electronAPI.auth.verifyEnabled().then(setAuthEnabled)
+  }, [])
+
+  useEffect(() => {
+    const unsubscribe = onExportSessionStatus((payload) => {
+      const countFromPayload = typeof payload?.activeTaskCount === 'number'
+        ? payload.activeTaskCount
+        : Array.isArray(payload?.inProgressSessionIds)
+          ? payload.inProgressSessionIds.length
+          : 0
+      const normalized = Math.max(0, Math.floor(countFromPayload))
+      setActiveExportTaskCount(normalized)
+    })
+
+    requestExportSessionStatus()
+    const timer = window.setTimeout(() => requestExportSessionStatus(), 120)
+
+    return () => {
+      unsubscribe()
+      window.clearTimeout(timer)
+    }
   }, [])
 
   useEffect(() => {
@@ -190,6 +212,7 @@ function Sidebar() {
   const isActive = (path: string) => {
     return location.pathname === path || location.pathname.startsWith(`${path}/`)
   }
+  const exportTaskBadge = activeExportTaskCount > 99 ? '99+' : `${activeExportTaskCount}`
 
   return (
     <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
@@ -270,8 +293,16 @@ function Sidebar() {
           className={`nav-item ${isActive('/export') ? 'active' : ''}`}
           title={collapsed ? '导出' : undefined}
         >
-          <span className="nav-icon"><Download size={20} /></span>
+          <span className="nav-icon nav-icon-with-badge">
+            <Download size={20} />
+            {collapsed && activeExportTaskCount > 0 && (
+              <span className="nav-badge icon-badge">{exportTaskBadge}</span>
+            )}
+          </span>
           <span className="nav-label">导出</span>
+          {!collapsed && activeExportTaskCount > 0 && (
+            <span className="nav-badge">{exportTaskBadge}</span>
+          )}
         </NavLink>
 
 

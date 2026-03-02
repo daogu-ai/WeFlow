@@ -1542,6 +1542,7 @@ function SettingsPage() {
     { value: 'chatlab', label: 'ChatLab', desc: '标准格式，支持其他软件导入' },
     { value: 'chatlab-jsonl', label: 'ChatLab JSONL', desc: '流式格式，适合大量消息' },
     { value: 'json', label: 'JSON', desc: '详细格式，包含完整消息信息' },
+    { value: 'arkme-json', label: 'Arkme JSON', desc: '紧凑 JSON，支持 sender 去重与关系统计' },
     { value: 'html', label: 'HTML', desc: '网页格式，可直接浏览' },
     { value: 'txt', label: 'TXT', desc: '纯文本，通用格式' },
     { value: 'weclone', label: 'WeClone CSV', desc: 'WeClone 兼容字段格式（CSV）' },

@@ -616,7 +616,7 @@ export interface ElectronAPI {
 }
 
 export interface ExportOptions {
-  format: 'chatlab' | 'chatlab-jsonl' | 'json' | 'html' | 'txt' | 'excel' | 'weclone' | 'sql'
+  format: 'chatlab' | 'chatlab-jsonl' | 'json' | 'arkme-json' | 'html' | 'txt' | 'excel' | 'weclone' | 'sql'
   dateRange?: { start: number; end: number } | null
   senderUsername?: string
   fileNameSuffix?: string

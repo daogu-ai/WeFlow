@@ -6,6 +6,7 @@ export interface OpenSingleExportPayload {
 
 export interface ExportSessionStatusPayload {
   inProgressSessionIds: string[]
+  activeTaskCount: number
 }
 
 export interface SingleExportDialogStatusPayload {
