@@ -979,8 +979,12 @@ function SettingsPage() {
           <div key={theme.id} className={`theme-card ${currentTheme === theme.id ? 'active' : ''}`} onClick={() => setTheme(theme.id)}>
             <div className="theme-preview" style={{
               background: effectiveMode === 'dark'
-                ? (theme.id === 'blossom-dream' ? 'linear-gradient(150deg, #151316 0%, #1A1620 50%, #131018 100%)' : 'linear-gradient(135deg, #1a1a1a 0%, #2a2a2a 100%)')
-                : (theme.id === 'blossom-dream' ? `linear-gradient(150deg, ${theme.bgColor} 0%, #F8F2F8 45%, #F2F6FB 100%)` : `linear-gradient(135deg, ${theme.bgColor} 0%, ${theme.bgColor}dd 100%)`)
+                ? (theme.id === 'blossom-dream' ? 'linear-gradient(150deg, #151316 0%, #1A1620 50%, #131018 100%)'
+                  : theme.id === 'geist' ? 'linear-gradient(135deg, #000000 0%, #111111 100%)'
+                  : 'linear-gradient(135deg, #1a1a1a 0%, #2a2a2a 100%)')
+                : (theme.id === 'blossom-dream' ? `linear-gradient(150deg, ${theme.bgColor} 0%, #F8F2F8 45%, #F2F6FB 100%)`
+                  : theme.id === 'geist' ? 'linear-gradient(135deg, #ffffff 0%, #f0f0f0 100%)'
+                  : `linear-gradient(135deg, ${theme.bgColor} 0%, ${theme.bgColor}dd 100%)`)
             }}>
               <div className="theme-accent" style={{
                 background: theme.accentColor
