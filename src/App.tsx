@@ -327,8 +327,19 @@ function App() {
     setUpdateInfo(null)
   }
 
-  const handleWindowCloseAction = async (action: 'tray' | 'quit' | 'cancel') => {
+  const handleWindowCloseAction = async (
+    action: 'tray' | 'quit' | 'cancel',
+    rememberChoice = false
+  ) => {
     setShowCloseDialog(false)
+    if (rememberChoice && action !== 'cancel') {
+      try {
+        await configService.setWindowCloseBehavior(action)
+      } catch (error) {
+        console.error('保存关闭偏好失败:', error)
+      }
+    }
+
     try {
       await window.electronAPI.window.respondCloseConfirm(action)
     } catch (error) {
@@ -617,8 +628,7 @@ function App() {
       <WindowCloseDialog
         open={showCloseDialog}
         canMinimizeToTray={canMinimizeToTray}
-        onTray={() => handleWindowCloseAction('tray')}
-        onQuit={() => handleWindowCloseAction('quit')}
+        onSelect={(action, rememberChoice) => handleWindowCloseAction(action, rememberChoice)}
         onCancel={() => handleWindowCloseAction('cancel')}
       />
 

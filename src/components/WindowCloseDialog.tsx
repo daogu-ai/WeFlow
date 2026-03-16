@@ -1,24 +1,25 @@
 import { Minimize2, Power, X } from 'lucide-react'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import './WindowCloseDialog.scss'
 
 interface WindowCloseDialogProps {
   open: boolean
   canMinimizeToTray: boolean
-  onTray: () => void
-  onQuit: () => void
+  onSelect: (action: 'tray' | 'quit', rememberChoice: boolean) => void
   onCancel: () => void
 }
 
 export default function WindowCloseDialog({
   open,
   canMinimizeToTray,
-  onTray,
-  onQuit,
+  onSelect,
   onCancel
 }: WindowCloseDialogProps) {
+  const [rememberChoice, setRememberChoice] = useState(false)
+
   useEffect(() => {
     if (!open) return
+    setRememberChoice(false)
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -63,7 +64,11 @@ export default function WindowCloseDialog({
 
         <div className="window-close-dialog-body">
           {canMinimizeToTray && (
-            <button type="button" className="window-close-dialog-option" onClick={onTray}>
+            <button
+              type="button"
+              className="window-close-dialog-option"
+              onClick={() => onSelect('tray', rememberChoice)}
+            >
               <span className="window-close-dialog-option-icon">
                 <Minimize2 size={18} />
               </span>
@@ -77,7 +82,7 @@ export default function WindowCloseDialog({
           <button
             type="button"
             className="window-close-dialog-option is-danger"
-            onClick={onQuit}
+            onClick={() => onSelect('quit', rememberChoice)}
           >
             <span className="window-close-dialog-option-icon">
               <Power size={18} />
@@ -88,6 +93,16 @@ export default function WindowCloseDialog({
             </span>
           </button>
         </div>
+
+        <label className="window-close-dialog-remember">
+          <input
+            type="checkbox"
+            checked={rememberChoice}
+            onChange={(event) => setRememberChoice(event.target.checked)}
+          />
+          <span className="window-close-dialog-checkbox" aria-hidden="true" />
+          <span className="window-close-dialog-remember-text">下次不再提示，直接按本次选择处理</span>
+        </label>
 
         <div className="window-close-dialog-actions">
           <button type="button" className="window-close-dialog-cancel" onClick={onCancel}>

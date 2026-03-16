@@ -99,6 +99,8 @@ let isAppQuitting = false
 let tray: Tray | null = null
 let isClosePromptVisible = false
 
+type WindowCloseBehavior = 'ask' | 'tray' | 'quit'
+
 // 更新下载状态管理（Issue #294 修复）
 let isDownloadInProgress = false
 let downloadProgressHandler: ((progress: any) => void) | null = null
@@ -254,6 +256,19 @@ const setupCustomTitleBarWindow = (win: BrowserWindow): void => {
   win.webContents.on('did-finish-load', emitMaximizeState)
 }
 
+const getWindowCloseBehavior = (): WindowCloseBehavior => {
+  const behavior = configService?.get('windowCloseBehavior')
+  return behavior === 'tray' || behavior === 'quit' ? behavior : 'ask'
+}
+
+const requestMainWindowCloseConfirmation = (win: BrowserWindow): void => {
+  if (isClosePromptVisible) return
+  isClosePromptVisible = true
+  win.webContents.send('window:confirmCloseRequested', {
+    canMinimizeToTray: Boolean(tray)
+  })
+}
+
 function createWindow(options: { autoShow?: boolean } = {}) {
   // 获取图标路径 - 打包后在 resources 目录
   const { autoShow = true } = options
@@ -357,12 +372,20 @@ function createWindow(options: { autoShow?: boolean } = {}) {
   win.on('close', (e) => {
     if (isAppQuitting || win !== mainWindow) return
     e.preventDefault()
-    if (isClosePromptVisible) return
+    const closeBehavior = getWindowCloseBehavior()
 
-    isClosePromptVisible = true
-    win.webContents.send('window:confirmCloseRequested', {
-      canMinimizeToTray: Boolean(tray)
-    })
+    if (closeBehavior === 'quit') {
+      isAppQuitting = true
+      app.quit()
+      return
+    }
+
+    if (closeBehavior === 'tray' && tray) {
+      win.hide()
+      return
+    }
+
+    requestMainWindowCloseConfirmation(win)
   })
 
   win.on('closed', () => {
