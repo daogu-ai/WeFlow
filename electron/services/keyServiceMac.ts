@@ -385,11 +385,11 @@ export class KeyServiceMac {
     // 通过 try/on error 回传详细错误，避免只看到 "Command failed"
     const scriptLines = [
       `set helperPath to ${JSON.stringify(helperPath)}`,
-      `set cmd to quoted form of helperPath & " ${pid} ${waitMs} 2>&1"`,
+      `set cmd to quoted form of helperPath & " ${pid} ${waitMs}"`,
       `set timeoutSec to ${timeoutSec}`,
       'try',
       'with timeout of timeoutSec seconds',
-      'set outText to do shell script cmd with administrator privileges',
+      'set outText to do shell script (cmd & " 2>&1") with administrator privileges',
       'end timeout',
       'return "WF_OK::" & outText',
       'on error errMsg number errNum partial result pr',
