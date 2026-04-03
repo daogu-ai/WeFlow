@@ -139,9 +139,16 @@ export class BizService {
         }
       })
 
-      const contactDbPath = join(root, accountWxid, 'contact.db')
+      const contactDbPath = join(root, accountWxid, 'db_storage', 'contact', 'contact.db')  // ？？？？
+      // console.log(`contactDbPath: ${contactDbPath}`)
+
       if (existsSync(contactDbPath)) {
+        // console.log('ok11')
+
         const bizInfoRes = await wcdbService.execQuery('contact', contactDbPath, 'SELECT username, type FROM biz_info')
+
+        // console.log(JSON.stringify(bizInfoRes, null, 2))
+
         if (bizInfoRes.success && bizInfoRes.rows) {
           const typeMap: Record<string, number> = {}
           for (const r of bizInfoRes.rows) typeMap[r.username] = r.type
@@ -150,7 +157,7 @@ export class BizService {
       }
 
       return result
-        .filter(acc => !acc.name.includes('朋友圈广告'))
+        .filter(acc => !acc.name.includes('广告'))
         .sort((a, b) => {
           if (a.username === 'gh_3dfda90e39d6') return -1
           if (b.username === 'gh_3dfda90e39d6') return 1

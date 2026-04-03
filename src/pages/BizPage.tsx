@@ -7,7 +7,7 @@ export interface BizAccount {
   username: string;
   name: string;
   avatar: string;
-  type: number;
+  type: string;
   last_time: number;
   formatted_last_time: string;
 }
@@ -84,18 +84,17 @@ export const BizAccountList: React.FC<{
                   <span className="biz-name">{item.name || item.username}</span>
                   <span className="biz-time">{item.formatted_last_time}</span>
                 </div>
-                {item.username === 'gh_3dfda90e39d6' && (
-                    <div className="biz-badge type-service">服务号</div>
-                )}
+                {/*{item.username === 'gh_3dfda90e39d6' && (*/}
+                {/*    <div className="biz-badge type-service">微信支付</div>*/}
+                {/*)}*/}
 
-                {/* 我看了下没有接口获取相关type，如果exec没法用的话确实无能为力，后面再适配吧 */}
-                {/*<div className={`biz-badge ${*/}
-                {/*    item.type === 1 ? 'type-service' :*/}
-                {/*        item.type === 0 ? 'type-sub' :*/}
-                {/*            item.type === 2 ? 'type-enterprise' : 'type-unknown'*/}
-                {/*}`}>*/}
-                {/*  {item.type === 1 ? '服务号' : item.type === 0 ? '订阅号' : item.type === 2 ? '企业号' : '未知'}*/}
-                {/*</div>*/}
+                <div className={`biz-badge ${
+                    item.type === '1' ? 'type-service' :
+                        item.type === '0' ? 'type-sub' :
+                            item.type === '2' ? 'type-enterprise' : 'type-unknown'
+                }`}>
+                  {item.type === '0' ? '公众号' : item.type === '1' ? '服务号' : item.type === '2' ? '企业号' : '未知'}
+                </div>
 
               </div>
             </div>
