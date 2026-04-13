@@ -2870,6 +2870,20 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
     </div>
   )
 
+  const withAsyncTimeout = async <T,>(task: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> => {
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null
+    try {
+      return await Promise.race([
+        task,
+        new Promise<T>((_, reject) => {
+          timeoutHandle = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs)
+        })
+      ])
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle)
+    }
+  }
+
   const hasWeiboCookieConfigured = aiInsightWeiboCookie.trim().length > 0
 
   const openWeiboCookieModal = () => {
@@ -2884,7 +2898,11 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
     setIsSavingWeiboCookie(true)
     setWeiboCookieError('')
     try {
-      const result = await window.electronAPI.social.saveWeiboCookie(draftToSave)
+      const result = await withAsyncTimeout(
+        window.electronAPI.social.saveWeiboCookie(draftToSave),
+        10000,
+        '保存微博 Cookie 超时，请稍后重试'
+      )
       if (!result.success) {
         setWeiboCookieError(result.error || '微博 Cookie 保存失败')
         return false
@@ -2935,10 +2953,6 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   }
 
   const handleSaveWeiboBinding = async (sessionId: string, displayName: string) => {
-    if (!hasWeiboCookieConfigured) {
-      setWeiboBindingErrors((prev) => ({ ...prev, [sessionId]: '请先填写微博 Cookie，再进行 UID 绑定' }))
-      return
-    }
     const draftUid = getWeiboBindingDraftValue(sessionId)
     setWeiboBindingLoadingSessionId(sessionId)
     setWeiboBindingErrors((prev) => {
@@ -2948,7 +2962,11 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       return next
     })
     try {
-      const result = await window.electronAPI.social.validateWeiboUid(draftUid)
+      const result = await withAsyncTimeout(
+        window.electronAPI.social.validateWeiboUid(draftUid),
+        12000,
+        '微博 UID 校验超时，请稍后重试'
+      )
       if (!result.success || !result.uid) {
         setWeiboBindingErrors((prev) => ({ ...prev, [sessionId]: result.error || '微博 UID 校验失败' }))
         return
@@ -3552,6 +3570,8 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
                               <span className="binding-feedback error">{weiboBindingError}</span>
                             ) : weiboBinding?.screenName ? (
                               <span className="binding-feedback">@{weiboBinding.screenName}</span>
+                            ) : weiboBinding?.uid ? (
+                              <span className="binding-feedback">已绑定 UID：{weiboBinding.uid}</span>
                             ) : (
                               <span className="binding-feedback muted">仅支持手动填写数字 UID</span>
                             )}
@@ -4563,7 +4583,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
 
       {showWeiboCookieModal && (
         <div
-          className="modal-overlay"
+          className="social-cookie-modal-overlay"
           onClick={(e) => {
             e.stopPropagation()
             void handleCloseWeiboCookieModal()
